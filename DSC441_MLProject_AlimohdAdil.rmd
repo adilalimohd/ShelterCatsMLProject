@@ -1,0 +1,192 @@
+---
+title: "Untitled"
+author: "Adil Alimohd"
+date: "March 14, 2020"
+output: html_document
+---
+
+```{r, data pre-processing}
+library(janitor)
+library(tidyverse)
+library(dataMaid)
+library(outliers)
+library(corrplot)
+library(dlookr)
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(MLmetrics)
+library(e1071)
+library(ROCR)
+library(ggplot2)
+library(e1071)
+
+
+setwd("C:/Users/U385722/Desktop/Misc/Depaul Data Science/Winter 2019-20/DSC 441")
+
+#Uploading data while setting null detection values
+shelter = read.csv("aac_shelter_cat_outcome_eng.csv",header=TRUE, na = c("", "NA", " ", "-", "N/A", "n/a", "missing", "Unknown"))
+
+#Cleaning column names
+shelter <- shelter %>% clean_names()
+                
+#Quick look at the data
+head(shelter)
+
+#Summary stats
+summary(shelter)
+
+#First round of removing unnecessary/duplicitive columns
+shelter[,c('animal_id','name','animal_type', 'outcome_subtype', 'age_upon_outcome', 'color','date_of_birth','datetime','monthyear','sex_upon_outcome','count','periods','period_range','sex_age_outcome','age_group','dob_monthyear')] <- NULL
+
+#Summary of null values
+sapply(shelter, function(x) sum(is.na(x)))
+
+#Dropping 3 rows that have outcome_type as null 
+shelter = shelter %>% drop_na(outcome_type)
+
+#Confirming that worked
+sapply(shelter, function(x) sum(is.na(x)))
+
+
+#Reviewing outcome_type
+as.data.frame(table(shelter$outcome_type))
+
+#Creating separate column to make outcome_type to boolean
+shelter$adopted<- recode(shelter$outcome_type,
+                                "Rto-Adopt" = "True",
+                                "Adoption" = "True",
+                                "Died" = "False",
+                                "Return to Owner" = "False",
+                                "Euthanasia" = "False",
+                                "Missing" = "False",
+                                "Transfer" = "False",
+                                "Disposal" = "False")
+
+#Checking that the new column "Adopted" looks clean
+as.data.frame(table(shelter$adopted))
+
+#Making coat pattern column binary as my interpretion of nulls is "no coat"
+shelter$coat_pattern_bin = ifelse(is.na(shelter$coat_pattern), "False","True")
+
+#Checking this new column looks clean
+as.data.frame(table(shelter$coat_pattern_bin))
+
+#Review distribution of age in year
+hist(shelter$outcome_age_years)
+
+#Transforming age column into categorical ordinal
+shelter$age <- ifelse(shelter$outcome_age_years <= 2, "Young", ifelse(shelter$outcome_age_years > 10, "Senior", "Adult"))
+
+#Reviewing breed types
+as.data.frame(table(shelter$breed1))
+ggplot(shelter, aes(breed1))+ geom_bar()+coord_flip()
+
+#Filtering down breed column into 4 subgroups based on volume
+shelter$grpbreed = ifelse(shelter$breed1 == "domestic longhair", "longhair",
+                     ifelse(shelter$breed1 == "domestic mediumhair", "medhair",
+                       ifelse(shelter$breed1 == "domestic shorthair", "shorthair",
+                        ifelse(shelter$breed1 == "siamese", "siamese", "other"))))
+
+#Found duplicate colors so trimming white space in this column
+as.data.frame(table(shelter$color1))
+shelter$color1 = trimws(shelter$color1)
+
+#Grouping simliar colors to simplify for the model
+shelter <- shelter %>% mutate(color1 = fct_collapse(color1,
+                  black = c("black", "black tiger", "gray"),
+                  blue = c("blue", "blue cream"),
+                  brown = c("brown","brown merle","brown tiger", "buff", "chocolate",                           "fawn", "lynx", "sable", "tan"),
+                  white = c("cream","white", "silver", "silver lynx"),
+                  orange_yellow = c("orange", "orange tiger", "flame", "yellow",                                        "apricot", "seal"),
+                  pink_purple = c("lilac", "pink")))
+ 
+#Manipulating day of week to weekend & weekday variables. Chose not to do this since it worsened my model later
+###shelter$outcome_weekday = ifelse(shelter$outcome_weekday == c("Saturday","Sunday"), "weekend", "weekday")
+
+#Manipulating outcome month. Chose to not do this since it worsened my model later
+##shelter$outcome_season = ifelse(shelter$outcome_month == c("12","1","2"), "winter", 
+##                              ifelse(shelter$outcome_month == c("3","4","5"), "spring",
+##                                     ifelse(shelter$outcome_month == c("6","7","8"), "summer", "fall")))
+                     
+ 
+#Second round of dropping unneeded columns after creating new ones 
+shelter[,c('coat_pattern','breed2','color2', 'breed', 'outcome_type', 'outcome_age_years', 'outcome_age_days', 'breed1', 'coat')] <- NULL                    
+
+#Reviewing a few bar plots
+barplot(table(shelter$color1))
+barplot(table(shelter$dob_year))
+barplot(table(shelter$dob_month))
+barplot(table(shelter$outcome_month))
+barplot(table(shelter$outcome_weekday))
+barplot(table(shelter$cat_kitten_outcome))
+
+```
+
+```{r, decision tree}
+
+#Set seed for duplication
+set.seed(123)
+
+#Separating train & testing data
+inTrain <- createDataPartition(y = shelter$adopted, p = 0.7, list = FALSE)
+training <- shelter[ inTrain,] 
+testing <- shelter[-inTrain,]
+
+#Decision tree creation
+tree <- rpart(adopted ~ ., data = training, control=rpart.control(cp=0))
+
+
+#Plotting the tree
+prp(tree, under=TRUE, type=3, varlen = 0, faclen = 0, extra = TRUE)
+
+#Variable importance scores
+tree$variable.importance
+
+# Print the tree as a set of rules
+print(tree)
+
+# Predicting the labels of the testing data
+tree.pred = predict(tree, testing, type="class")
+
+# Creating a confusion matrix and calculate the performance metrics
+confusionMatrix(tree.pred, testing$adopted)
+
+# View and plot the complexity of the tree relative to the error rate
+
+plotcp(tree)
+
+# Print a table that summarizes complexity
+printcp(tree)
+
+#Pruned using a cost complexity penalty.
+pruned <- prune(tree, cp = 0.005)
+prp(pruned, under=TRUE, varlen = 0, faclen = 0, extra = TRUE)
+
+# Make a prediction with the pruned tree
+tree.pruned = predict(pruned, testing, type="class")
+1
+# View the performance metrics for the pruned tree
+confusionMatrix(tree.pruned, testing$adopted)
+
+pruned$variable.importance
+
+#View complexity price results
+printcp(pruned)
+
+```
+
+
+```{r, Random Forest}
+
+rf <- train(adopted ~ ., data = training, method = "rf", allowParallel=TRUE)
+varImp(rf)
+
+
+rf_pred <- predict(rf, newdata = testing)
+confusionMatrix(rf_pred, testing$adopted)
+
+
+```
+
